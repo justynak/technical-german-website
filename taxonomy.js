@@ -28,38 +28,38 @@ window.WD = window.WD || {};
   /* group: for grouping in summaries; label: for showing to a human. */
   var CATEGORIES = [
     // --- word order
-    { id: "word_order_main", group: "szyk", label: "Szyk zdania głównego" },
-    { id: "word_order_subordinate", group: "szyk", label: "Szyk zdania podrzędnego" },
-    { id: "verb_final_position", group: "szyk", label: "Czasownik na końcu" },
-    { id: "separable_verb", group: "szyk", label: "Czasownik rozdzielnie złożony" },
+    { id: "word_order_main", group: "order", label: "Szyk zdania głównego" },
+    { id: "word_order_subordinate", group: "order", label: "Szyk zdania podrzędnego" },
+    { id: "verb_final_position", group: "order", label: "Czasownik na końcu" },
+    { id: "separable_verb", group: "order", label: "Czasownik rozdzielnie złożony" },
 
     // --- verb forms
-    { id: "perfekt_auxiliary", group: "czasownik", label: "haben czy sein w Perfekcie" },
-    { id: "participle_form", group: "czasownik", label: "Forma Partizip II" },
-    { id: "tense_choice", group: "czasownik", label: "Wybór czasu" },
-    { id: "passive_voice", group: "czasownik", label: "Strona bierna" },
-    { id: "modal_verb", group: "czasownik", label: "Czasownik modalny" },
-    { id: "subjunctive_politeness", group: "czasownik", label: "Tryb przypuszczający (könnten)" },
+    { id: "perfekt_auxiliary", group: "verb", label: "haben czy sein w Perfekcie" },
+    { id: "participle_form", group: "verb", label: "Forma Partizip II" },
+    { id: "tense_choice", group: "verb", label: "Wybór czasu" },
+    { id: "passive_voice", group: "verb", label: "Strona bierna" },
+    { id: "modal_verb", group: "verb", label: "Czasownik modalny" },
+    { id: "subjunctive_politeness", group: "verb", label: "Tryb przypuszczający (könnten)" },
 
     // --- noun and cases
-    { id: "article_gender", group: "rzeczownik", label: "Rodzaj rzeczownika" },
-    { id: "case_akkusativ", group: "rzeczownik", label: "Biernik (Akkusativ)" },
-    { id: "case_dativ", group: "rzeczownik", label: "Celownik (Dativ)" },
-    { id: "case_genitiv", group: "rzeczownik", label: "Dopełniacz (Genitiv)" },
-    { id: "plural_form", group: "rzeczownik", label: "Liczba mnoga" },
-    { id: "adjective_ending", group: "rzeczownik", label: "Końcówka przymiotnika" },
-    { id: "preposition_choice", group: "rzeczownik", label: "Wybór przyimka" },
+    { id: "article_gender", group: "noun", label: "Rodzaj rzeczownika" },
+    { id: "case_akkusativ", group: "noun", label: "Biernik (Akkusativ)" },
+    { id: "case_dativ", group: "noun", label: "Celownik (Dativ)" },
+    { id: "case_genitiv", group: "noun", label: "Dopełniacz (Genitiv)" },
+    { id: "plural_form", group: "noun", label: "Liczba mnoga" },
+    { id: "adjective_ending", group: "noun", label: "Końcówka przymiotnika" },
+    { id: "preposition_choice", group: "noun", label: "Wybór przyimka" },
 
     // --- vocabulary and register
-    { id: "vocabulary_choice", group: "słownictwo", label: "Niewłaściwe słowo" },
-    { id: "technical_term", group: "słownictwo", label: "Termin techniczny" },
-    { id: "register_too_casual", group: "słownictwo", label: "Za potocznie" },
-    { id: "register_too_formal", group: "słownictwo", label: "Za formalnie" },
+    { id: "vocabulary_choice", group: "vocabulary", label: "Niewłaściwe słowo" },
+    { id: "technical_term", group: "vocabulary", label: "Termin techniczny" },
+    { id: "register_too_casual", group: "vocabulary", label: "Za potocznie" },
+    { id: "register_too_formal", group: "vocabulary", label: "Za formalnie" },
 
     // --- other
-    { id: "spelling", group: "inne", label: "Pisownia" },
-    { id: "missing_content", group: "inne", label: "Pominięta informacja" },
-    { id: "literal_translation", group: "inne", label: "Kalka z polskiego" },
+    { id: "spelling", group: "other", label: "Pisownia" },
+    { id: "missing_content", group: "other", label: "Pominięta informacja" },
+    { id: "literal_translation", group: "other", label: "Kalka z polskiego" },
   ];
 
   var byId = {};
