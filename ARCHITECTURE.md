@@ -179,18 +179,58 @@ the test suite as a gate; `artifacts.baseDirectory` is the repo root, and every 
 as-is. `customHttp.yml` is Amplify's mechanism for attaching the security headers described in
 §9 at the CDN layer, not just via the in-page `<meta>` tag.
 
-## 12. What is explicitly NOT built yet
+## 12. Backend: attempt ingestion (`amplify/`)
 
-The schema and export pipeline above were clearly designed with the following in mind, but none
-of it exists in code yet:
+The first piece of server-side infrastructure, added to give the future analysis pipeline
+somewhere to read from. Defined as plain CDK inside Amplify Gen 2's backend-as-code
+(`amplify/backend.ts`), deployed through the same git-push-to-Amplify flow as the frontend — no
+Amplify "categories" (Cognito auth, AppSync/GraphQL data) are used, deliberately, so the frontend
+never needs the `aws-amplify` client library or a build step. It stays a plain static site that
+happens to call one more endpoint with `fetch()`.
 
-- Any server component (no API, no Lambda, no database).
-- Automated mistake classification — the `tagging` field exists and is *read* (`pendingTagging`,
-  `setTagging`), but nothing currently calls an LLM; `status` never leaves `"pending"` in
-  practice today.
+- **`AttemptsTable`** (DynamoDB, on-demand billing) — single-table design. Partition key `pk` is
+  the constant `"ATTEMPT"`; sort key `sk` is `"<at>#<id>"`. This makes "everything since
+  timestamp X" a `Query`, not a `Scan` — the access pattern the future daily analysis job needs.
+  `RemovalPolicy.RETAIN`: the table survives a stack teardown by default, since it holds a real
+  person's practice history.
+- **`RecordAttemptFunction`** (Lambda, `amplify/functions/record-attempt/index.js`) — the only
+  write path into the table. Deliberately plain CommonJS with no dependencies beyond
+  `@aws-sdk/client-dynamodb`, which ships pre-bundled in the Lambda Node.js runtime — no
+  bundler, no `node_modules` shipped as part of the function code. The item shape mirrors
+  `attemptLog` records from `state.js` field-for-field, so there is no translation layer between
+  what the browser writes locally and what lands in the database.
+- **Exposed via a Lambda Function URL**, not API Gateway. At this traffic volume (one user, tens
+  of requests a day) API Gateway adds cost and CDK complexity with no benefit — a Function URL is
+  free indefinitely and is a plain HTTPS endpoint.
+- **Auth is a static shared secret**, checked inside the function (`x-attempt-secret` header
+  against `INGEST_SHARED_SECRET`), not IAM-signed requests — the client is a static site with no
+  request-signing capability. The threat model this defends against is anonymous internet
+  scanners writing garbage into the table, not a targeted attacker; see §9's reasoning about the
+  page password for the same logic applied to the API.
+- **Writes are idempotent**: the put uses `ConditionExpression: attribute_not_exists(sk)`, so a
+  retried POST (flaky connection, not unlikely on real-world wifi) never produces a duplicate
+  record — it silently no-ops on the second attempt, keyed off the same `id` the client already
+  generates.
+
+Two things this deliberately does **not** do yet:
+- The frontend does not call this endpoint. The Function URL's hostname is only known after the
+  first deploy, and CORS `allowedOrigins` is wide open (`*`) until the real Amplify hosting
+  origin is known — both need a follow-up commit once those values exist.
+- `connect-src 'none'` in the CSP (§9) has not been relaxed. The page still cannot make network
+  requests. Wiring the frontend will require adding exactly one allowed origin (the Function URL
+  domain) to both `customHttp.yml` and the `<meta>` CSP tag — nothing broader.
+
+## 13. What is explicitly NOT built yet
+
+- Automated mistake classification — the `tagging` field on each attempt exists and is *read*
+  (`pendingTagging`, `setTagging` in `state.js`), but nothing currently calls an LLM; `status`
+  never leaves `"pending"` in practice today.
+- The daily batch analysis/generation job (EventBridge schedule + Lambda reading from
+  `AttemptsTable`).
 - Scheduled or on-demand lesson generation (`origin: "generated"` and `status: "draft"` are
-  defined and validated, but no code produces such a lesson).
-- Authentication / access control of any kind.
-- Any relaxation of `connect-src`.
+  defined and validated in `state.js`, but no code produces such a lesson).
+- Authentication / access control on the page itself (the "husband is the only user" password
+  gate discussed separately — not yet implemented).
+- Wiring the frontend to `RecordAttemptFunction` and the corresponding CSP relaxation (see §12).
 
-These are being designed separately; this document will be updated once any of them land.
+These are being designed and built incrementally; this document is updated as they land.
