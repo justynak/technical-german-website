@@ -1,4 +1,14 @@
 version: 1
+backend:
+  phases:
+    build:
+      commands:
+        # npm ci fails here: @aws-amplify/backend-cli's CDK toolkit
+        # sub-dependencies don't fully round-trip through package-lock.json,
+        # so `ci`'s strict lock/tree match rejects a perfectly good install.
+        # Verified locally with npm 9 and npm 10 before settling on this.
+        - npm install --cache .npm --prefer-offline
+        - npx ampx pipeline-deploy --branch $AWS_BRANCH --app-id $AWS_APP_ID
 frontend:
   phases:
     build:
@@ -7,6 +17,15 @@ frontend:
   artifacts:
     baseDirectory: /
     files:
-      - '**/*'
+      # Explicit list, not '**/*' — the repo root now also holds the amplify/
+      # backend source, node_modules, and package*.json (backend-build-only),
+      # none of which should be served as public static files.
+      - index.html
+      - styles.css
+      - app.js
+      - lessons.js
+      - schedule.js
+      - state.js
+      - taxonomy.js
   cache:
     paths: []

@@ -1,0 +1,6 @@
+node_modules/
+.npm/
+.amplify/
+cdk.out/
+amplify_outputs.json
+amplify_outputs.d.ts
