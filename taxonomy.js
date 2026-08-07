@@ -1,23 +1,23 @@
-/* Zamknięty słownik kategorii błędów.
+/* Closed dictionary of error categories.
  *
- * DLACZEGO ZAMKNIĘTY: analiza błędów ma sens tylko wtedy, gdy da się je
- * zliczać. Model językowy pozostawiony sam sobie napisze przy jednym
- * uruchomieniu "article_gender", przy drugim "wrong_article", przy trzecim
- * "zły rodzajnik" — i wtedy „5 błędów w rodzajnikach” jest nieprawdą, bo
- * rozsypało się na trzy różne etykiety. Dlatego lista jest tutaj, w kodzie,
- * a nie w prompcie, a odpowiedzi modelu spoza listy trzeba ODRZUCAĆ, nie
- * dopisywać.
+ * WHY CLOSED: error analysis only makes sense if the errors can be counted.
+ * A language model left to its own devices will write "article_gender" on
+ * one run, "wrong_article" on the next, "zły rodzajnik" on a third — and
+ * then "5 article errors" is untrue, because it splintered into three
+ * different labels. That's why the list lives here, in code, not in the
+ * prompt, and model responses outside the list must be REJECTED, not
+ * appended.
  *
- * DLACZEGO WERSJONOWANY: gdy zmienisz listę kategorii, prompt albo model,
- * rozkład etykiet się zmienia. Bez numeru wersji zapisanego przy KAŻDEJ
- * etykiecie zestawienia z marca i z października zsumują się w jedną liczbę,
- * i wyjdzie, że „pogorszył się w Dativie”, gdy w rzeczywistości poprawiłaś
- * prompt. Wniosek będzie fałszywy, a nic tego nie zasygnalizuje.
+ * WHY VERSIONED: when you change the category list, the prompt, or the
+ * model, the label distribution shifts. Without a version number recorded
+ * on EVERY label, a March summary and an October summary would sum into
+ * one number, making it look like "Dativ got worse" when in reality you
+ * fixed the prompt. The conclusion would be false, and nothing would flag it.
  *
- * ZASADA: nie zmieniaj znaczenia istniejącego `id`. Dodawanie nowych kategorii
- * jest bezpieczne (podnieś TAXONOMY_VERSION). Usuwanie i przemianowywanie
- * unieważnia stare dane — wtedy stare etykiety zostaw i tylko przestań ich
- * używać w nowych analizach.
+ * RULE: don't change the meaning of an existing `id`. Adding new categories
+ * is safe (bump TAXONOMY_VERSION). Removing or renaming invalidates old
+ * data — in that case leave the old labels and just stop using them in new
+ * analyses.
  */
 window.WD = window.WD || {};
 (function () {
@@ -25,15 +25,15 @@ window.WD = window.WD || {};
 
   var TAXONOMY_VERSION = 1;
 
-  /* group: do grupowania w zestawieniach; label: do pokazania człowiekowi. */
+  /* group: for grouping in summaries; label: for showing to a human. */
   var CATEGORIES = [
-    // --- szyk zdania
+    // --- word order
     { id: "word_order_main", group: "szyk", label: "Szyk zdania głównego" },
     { id: "word_order_subordinate", group: "szyk", label: "Szyk zdania podrzędnego" },
     { id: "verb_final_position", group: "szyk", label: "Czasownik na końcu" },
     { id: "separable_verb", group: "szyk", label: "Czasownik rozdzielnie złożony" },
 
-    // --- formy czasownika
+    // --- verb forms
     { id: "perfekt_auxiliary", group: "czasownik", label: "haben czy sein w Perfekcie" },
     { id: "participle_form", group: "czasownik", label: "Forma Partizip II" },
     { id: "tense_choice", group: "czasownik", label: "Wybór czasu" },
@@ -41,7 +41,7 @@ window.WD = window.WD || {};
     { id: "modal_verb", group: "czasownik", label: "Czasownik modalny" },
     { id: "subjunctive_politeness", group: "czasownik", label: "Tryb przypuszczający (könnten)" },
 
-    // --- rzeczownik i przypadki
+    // --- noun and cases
     { id: "article_gender", group: "rzeczownik", label: "Rodzaj rzeczownika" },
     { id: "case_akkusativ", group: "rzeczownik", label: "Biernik (Akkusativ)" },
     { id: "case_dativ", group: "rzeczownik", label: "Celownik (Dativ)" },
@@ -50,13 +50,13 @@ window.WD = window.WD || {};
     { id: "adjective_ending", group: "rzeczownik", label: "Końcówka przymiotnika" },
     { id: "preposition_choice", group: "rzeczownik", label: "Wybór przyimka" },
 
-    // --- słownictwo i rejestr
+    // --- vocabulary and register
     { id: "vocabulary_choice", group: "słownictwo", label: "Niewłaściwe słowo" },
     { id: "technical_term", group: "słownictwo", label: "Termin techniczny" },
     { id: "register_too_casual", group: "słownictwo", label: "Za potocznie" },
     { id: "register_too_formal", group: "słownictwo", label: "Za formalnie" },
 
-    // --- pozostałe
+    // --- other
     { id: "spelling", group: "inne", label: "Pisownia" },
     { id: "missing_content", group: "inne", label: "Pominięta informacja" },
     { id: "literal_translation", group: "inne", label: "Kalka z polskiego" },
@@ -83,9 +83,10 @@ window.WD = window.WD || {};
     return byId[id] ? byId[id].group : "inne";
   }
 
-  /* Filtr odpowiedzi modelu. Zwraca to, co znane, i osobno to, co odrzucone —
-   * odrzucone warto logować, bo powtarzające się nieznane etykiety to sygnał,
-   * że w taksonomii brakuje kategorii, a nie że model się myli. */
+  /* Filters model responses. Returns what's known, and separately what's
+   * rejected — rejected ones are worth logging, since recurring unknown
+   * labels are a signal that the taxonomy is missing a category, not that
+   * the model is wrong. */
   function accept(tags) {
     var known = [];
     var rejected = [];
@@ -101,9 +102,9 @@ window.WD = window.WD || {};
     return { tags: known, rejected: rejected };
   }
 
-  /* Zliczanie robimy TUTAJ, deterministycznie — nigdy nie prosimy o to modelu.
-   * Model etykietuje pojedyncze próby; sumy liczy kod, bo tylko wtedy są
-   * prawdziwe i powtarzalne. */
+  /* Counting is done HERE, deterministically — we never ask the model to do
+   * it. The model tags individual attempts; the code computes the totals,
+   * because only then are they accurate and reproducible. */
   function summarize(taggedAttempts) {
     var counts = {};
     var examples = {};
@@ -131,7 +132,7 @@ window.WD = window.WD || {};
         };
       })
       .sort(function (a, b) {
-        // remis rozstrzygamy po id, żeby zestawienie było powtarzalne
+        // ties are broken by id, so the summary is reproducible
         return b.count - a.count || (a.category < b.category ? -1 : 1);
       });
 

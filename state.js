@@ -1,17 +1,17 @@
-/* Warstwa danych: zapis postępu, migracja starych danych, scalanie, eksport/import.
+/* Data layer: saving progress, migrating old data, merging, export/import.
  *
- * Dwie zasady, na których opiera się cały ten plik:
+ * Two principles this whole file rests on:
  *
- * 1. TOŻSAMOŚĆ, NIE POZYCJA. Postęp jest kluczowany identyfikatorem lekcji
- *    (`lessons["raport-serwisowy"]`), nie indeksem w tablicy. Dzięki temu można
- *    dodawać, usuwać i przestawiać lekcje bez psucia zapisanego postępu.
+ * 1. IDENTITY, NOT POSITION. Progress is keyed by lesson id
+ *    (`lessons["raport-serwisowy"]`), not array index. This lets lessons be
+ *    added, removed, and reordered without breaking saved progress.
  *
- * 2. DANE SĄ MONOTONICZNE. Każda zmienna wartość nosi własny znacznik czasu,
- *    a usuwanie zostawia „nagrobek” (deleted: true) zamiast wycinać wpis.
- *    Dzięki temu scalanie dwóch kopii jest łączeniem zbiorów: wynik nie zależy
- *    od kolejności scalania i nigdy nie gubi postępu. To jest fundament pod
- *    ewentualną synchronizację między urządzeniami — merge() poniżej jest już
- *    całą potrzebną logiką.
+ * 2. DATA IS MONOTONIC. Every mutable value carries its own timestamp, and
+ *    deletion leaves a "tombstone" (deleted: true) instead of cutting the
+ *    entry out. This makes merging two copies a set union: the result
+ *    doesn't depend on merge order and never loses progress. This is the
+ *    foundation for eventual cross-device sync — merge() below is already
+ *    all the logic that's needed.
  */
 window.WD = window.WD || {};
 (function () {
@@ -20,23 +20,23 @@ window.WD = window.WD || {};
   var KEY = "werkdeutsch-state";
   var LEGACY_KEY = "werkdeutsch-state-v1";
 
-  /* v3 dodało mapę `review` (harmonogram powtórek).
-   * v4 zamieniło jedną nadpisywaną odpowiedź na lekcję (`lessons[id].attempt`)
-   *    na dopisywany dziennik prób (`attemptLog`).
+  /* v3 added the `review` map (review schedule).
+   * v4 replaced a single overwritten answer per lesson (`lessons[id].attempt`)
+   *    with an append-only attempt log (`attemptLog`).
    *
-   * Numer podnosimy przy każdej zmianie kształtu, także przy samym dodaniu
-   * pola: kod starszej wersji nie zna nowych pól, więc jego zapis by je wyciął.
-   * Podniesiony numer sprawia, że stara karta przechodzi w tryb
-   * tylko-do-czytania zamiast niszczyć dane. */
+   * The number is bumped on every shape change, even just adding a field:
+   * older code doesn't know about new fields, so its save would strip them.
+   * Bumping the number makes an old tab fall back to read-only mode instead
+   * of corrupting data. */
   var SCHEMA_VERSION = 4;
 
-  /* Kolejność lekcji w wersji v1 — ZAMROŻONA NA ZAWSZE.
+  /* Lesson order from v1 — FROZEN FOREVER.
    *
-   * Stare dane zapisywały postęp jako indeksy ([0, 2, 5]). Indeks 2 znaczy
-   * „trzecia lekcja w tablicy w chwili, gdy dane były zapisywane” — a nie
-   * „trzecia lekcja dzisiaj”. Odtworzyć to można wyłącznie z zamrożonej listy.
-   * Dlatego ta tablica nie może być generowana z lessons.js i nie wolno jej
-   * zmieniać, nawet jeśli kolejność lekcji w lessons.js się zmieni.
+   * Old data saved progress as indexes ([0, 2, 5]). Index 2 means "the
+   * third lesson in the array at the time the data was saved" — not "the
+   * third lesson today." This can only be reconstructed from a frozen list.
+   * That's why this array must not be generated from lessons.js and must
+   * never change, even if the lesson order in lessons.js changes.
    */
   var V1_ORDER = [
     "awaria-prasy-hydraulicznej",
@@ -51,9 +51,9 @@ window.WD = window.WD || {};
     return Date.now();
   };
 
-  /* Dane po migracji nie mają prawdziwych znaczników czasu — nie wiemy, kiedy
-   * powstały. Dajemy im 1 (prawie epoka), żeby każdy późniejszy realny zapis
-   * z dowolnego urządzenia wygrał przy scalaniu. */
+  /* Migrated data has no real timestamps — we don't know when it was
+   * created. We give it 1 (almost epoch), so any later real write from any
+   * device wins during merging. */
   var MIGRATED_AT = 1;
 
   function emptyState() {
@@ -63,24 +63,25 @@ window.WD = window.WD || {};
       currentAt: 0,
       lessons: {},
       vocab: {},
-      /* Harmonogram powtórek. Klucz to "<typ>:<id>" — dziś tylko
-       * "lesson:<id>", ale format jest gotowy na inne typy pozycji
-       * (np. "word:<id>") bez zmiany schematu i bez migracji. */
+      /* Review schedule. The key is "<type>:<id>" — today only
+       * "lesson:<id>", but the format is ready for other item types
+       * (e.g. "word:<id>") without a schema change or migration. */
       review: {},
-      /* Dziennik prób: DOPISYWANY, nigdy nie nadpisywany.
+      /* Attempt log: APPEND-ONLY, never overwritten.
        *
-       * Wcześniej była tu jedna odpowiedź na lekcję, nadpisywana przy każdym
-       * podejściu. To wygodne dla pola tekstowego i bezużyteczne dla analizy —
-       * historia błędów była niszczona w chwili powstania. Bez historii nie da
-       * się nic policzyć ani niczego wygenerować na podstawie błędów.
+       * There used to be a single answer per lesson here, overwritten on
+       * every attempt. That's convenient for a text field and useless for
+       * analysis — the error history was destroyed the moment it was
+       * created. Without history, nothing can be computed or generated
+       * from the errors.
        *
-       * Rekordy są niezmienne, więc scalanie to suma zbiorów po `id` —
-       * najprostszy możliwy przypadek, bez konfliktów. Jedyne mutowalne pole to
-       * `tagging`, rozstrzygane własnym znacznikiem czasu.
+       * Records are immutable, so merging is a set union by `id` — the
+       * simplest possible case, with no conflicts. The only mutable field
+       * is `tagging`, resolved by its own timestamp.
        *
-       * Rozmiar: ~300 bajtów na rekord, więc 2000 prób ≈ 600 kB. Przy limicie
-       * localStorage rzędu 5 MB nie ma potrzeby przycinania; gdyby kiedyś była,
-       * przycinaj po `at` i pamiętaj, że scalanie może wskrzesić usunięte. */
+       * Size: ~300 bytes per record, so 2000 attempts ≈ 600 kB. Given a
+       * localStorage limit around 5 MB, there's no need to trim; if there
+       * ever is, trim by `at` and remember that merging can revive deleted ones. */
       attemptLog: [],
       updatedAt: 0,
     };
@@ -90,9 +91,9 @@ window.WD = window.WD || {};
     return type + ":" + id;
   }
 
-  /* Identyfikator urządzenia trzymamy POZA scalanym stanem — jest lokalny i nie
-   * ma go po co przenosić między urządzeniami. Służy tylko do tego, żeby id prób
-   * z dwóch urządzeń nigdy się nie zderzyły. */
+  /* The device id is kept OUTSIDE the merged state — it's local and there's
+   * no reason to carry it between devices. It only serves to make sure
+   * attempt ids from two devices never collide. */
   var DEVICE_KEY = "werkdeutsch-device";
   var deviceId = "";
 
@@ -108,7 +109,7 @@ window.WD = window.WD || {};
       try {
         localStorage.setItem(DEVICE_KEY, deviceId);
       } catch (e) {
-        /* tryb prywatny — id zostanie tylko na czas sesji */
+        /* private browsing — id will only last for the session */
       }
     }
     return deviceId;
@@ -118,24 +119,24 @@ window.WD = window.WD || {};
     return "a" + at.toString(36) + "-" + getDeviceId() + "-" + Math.random().toString(36).slice(2, 6);
   }
 
-  /* Stan etykietowania jest JAWNY, a nie „null dopóki nie przeleci nocny job”.
-   * Pole `null` nie umie odróżnić: jeszcze nieprzetworzone / przetworzone i bez
-   * błędów / etykietowanie padło / padło pięć razy i trzeba odpuścić. Bez tego
-   * rozróżnienia po pierwszej awarii nie wiadomo, co ponowić. */
+  /* Tagging state is EXPLICIT, not "null until the nightly job runs by".
+   * A `null` field can't distinguish: not yet processed / processed with no
+   * errors / tagging failed / failed five times and should be given up on.
+   * Without this distinction, after the first failure it's unclear what to retry. */
   function emptyTagging() {
     return {
       status: "pending", // pending | done | failed | skipped
       tags: [],
-      rejected: [], // etykiety spoza taksonomii — sygnał, że jej brakuje
-      taggerVersion: "", // model + wersja promptu, które to wyprodukowały
-      taxonomyVersion: 0, // wersja słownika kategorii z chwili etykietowania
+      rejected: [], // tags outside the taxonomy — a signal that it's missing one
+      taggerVersion: "", // model + prompt version that produced this
+      taxonomyVersion: 0, // category dictionary version at tagging time
       at: 0,
       tries: 0,
       error: "",
     };
   }
 
-  // ---------------------------------------------------------------- migracja
+  // ---------------------------------------------------------------- migration
 
   function migrateV1(old) {
     var s = emptyState();
@@ -144,7 +145,7 @@ window.WD = window.WD || {};
     if (Array.isArray(old.completed)) {
       for (i = 0; i < old.completed.length; i++) {
         var id = V1_ORDER[old.completed[i]];
-        if (!id) continue; // indeks poza zamrożoną listą — nie da się odtworzyć
+        if (!id) continue; // index outside the frozen list — can't be reconstructed
         s.lessons[id] = s.lessons[id] || {};
         s.lessons[id].completed = true;
         s.lessons[id].completedAt = MIGRATED_AT;
@@ -160,9 +161,9 @@ window.WD = window.WD || {};
       });
     }
 
-    /* Stare id słówka było wyliczane z treści ("die leckage|nieszczelność").
-     * Dopasowujemy po treści do słówek z lessons.js, żeby odzyskać nowe,
-     * trwałe id. Czego nie da się dopasować, ląduje jako własny zwrot. */
+    /* The old vocab id was derived from its content ("die leckage|nieszczelność").
+     * We match by content against words in lessons.js to recover the new,
+     * stable id. Anything that can't be matched ends up as a custom phrase. */
     var byText = {};
     (window.LESSONS || []).forEach(function (lesson) {
       lesson.vocab.forEach(function (w) {
@@ -198,9 +199,9 @@ window.WD = window.WD || {};
     return s;
   }
 
-  /* v3 → v4: jedna nadpisywana odpowiedź na lekcję staje się jednym rekordem
-   * w dzienniku. Historii nie da się odtworzyć — została nadpisana jeszcze
-   * zanim ten kod powstał. Ratujemy to, co zostało: ostatnią próbę. */
+  /* v3 → v4: a single overwritten answer per lesson becomes one record
+   * in the log. The history can't be reconstructed — it was overwritten
+   * before this code even existed. We salvage what's left: the last attempt. */
   function migrateToV4(raw) {
     var s = normalize(raw);
     if (raw && raw.lessons && typeof raw.lessons === "object") {
@@ -227,9 +228,9 @@ window.WD = window.WD || {};
       shownRegister: shownRegister || "natural",
       choiceIndex: -1,
       correctIndex: -1,
-      /* Dla swobodnego tekstu poprawność NIE JEST rozstrzygalna automatycznie:
-       * lekcja ma trzy poprawne wzorce o różnym rejestrze. `null` znaczy tu
-       * „nieocenione”, a nie „błędne” — inaczej każda statystyka byłaby fikcją. */
+      /* For free text, correctness is NOT automatically decidable: a lesson
+       * has three correct patterns in different registers. `null` here means
+       * "ungraded", not "wrong" — otherwise any statistic would be fiction. */
       isCorrect: null,
       tagging: emptyTagging(),
     };
@@ -246,8 +247,8 @@ window.WD = window.WD || {};
       shownRegister: "",
       choiceIndex: choiceIndex,
       correctIndex: correctIndex,
-      /* Tu poprawność jest rozstrzygalna bez żadnego modelu — i właśnie dlatego
-       * test wielokrotnego wyboru jest najtańszym źródłem danych o słabościach. */
+      /* Here correctness is decidable without any model — and that's exactly
+       * why multiple-choice is the cheapest source of data on weaknesses. */
       isCorrect: choiceIndex === correctIndex,
       tagging: emptyTagging(),
     };
@@ -268,10 +269,10 @@ window.WD = window.WD || {};
     return "custom:" + textKey(de, pl).replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
   }
 
-  // ------------------------------------------------------------- normalizacja
+  // ------------------------------------------------------------- normalization
 
-  /* Nie ufamy niczemu, co przychodzi z localStorage ani z importowanego pliku.
-   * Zła zawartość ma zostać odrzucona tutaj, a nie wysypać render(). */
+  /* We trust nothing that comes from localStorage or an imported file.
+   * Bad content should be rejected here, not crash render(). */
   function normalize(raw) {
     var s = emptyState();
     if (!raw || typeof raw !== "object") return s;
@@ -284,9 +285,9 @@ window.WD = window.WD || {};
       Object.keys(raw.lessons).forEach(function (id) {
         var l = raw.lessons[id];
         if (!l || typeof l !== "object") return;
-        /* `attempt`/`attemptAt` z v3 celowo NIE trafiają tu z powrotem —
-         * jedynym źródłem prawdy o próbach jest teraz attemptLog. Odczytuje je
-         * wyłącznie migrateToV4, z surowych danych. */
+        /* `attempt`/`attemptAt` from v3 are deliberately NOT carried back
+         * here — attemptLog is now the sole source of truth for attempts.
+         * Only migrateToV4 reads them, straight from the raw data. */
         s.lessons[id] = {
           completed: !!l.completed,
           completedAt: num(l.completedAt),
@@ -334,7 +335,7 @@ window.WD = window.WD || {};
         if (!r || typeof r !== "object") return;
         if (typeof r.id !== "string" || !r.id) return;
         if (typeof r.lessonId !== "string" || !r.lessonId) return;
-        if (seen[r.id]) return; // dziennik musi mieć unikalne id
+        if (seen[r.id]) return; // the log must have unique ids
         seen[r.id] = 1;
         s.attemptLog.push({
           id: r.id,
@@ -362,9 +363,9 @@ window.WD = window.WD || {};
     if (!t || typeof t !== "object") return out;
     if (TAGGING_STATUSES.indexOf(t.status) >= 0) out.status = t.status;
     var tax = window.WD.taxonomy;
-    /* Etykiety spoza taksonomii odsiewamy już przy wczytywaniu, nie dopiero
-     * przy zliczaniu — inaczej nieznana etykieta rozjeżdżałaby statystyki
-     * w każdym miejscu, które o niej nie wie. */
+    /* Tags outside the taxonomy are filtered out already at load time, not
+     * just at counting time — otherwise an unknown tag would skew statistics
+     * everywhere that doesn't know about it. */
     if (Array.isArray(t.tags) && tax) out.tags = tax.accept(t.tags).tags;
     if (Array.isArray(t.rejected)) {
       out.rejected = t.rejected.filter(function (x) {
@@ -383,27 +384,27 @@ window.WD = window.WD || {};
     return typeof x === "number" && isFinite(x) && x >= 0 ? x : 0;
   }
 
-  // ----------------------------------------------------------------- scalanie
+  // ----------------------------------------------------------------- merging
 
-  /* Scala dwie kopie stanu. Własności, na których to stoi:
-   *   - łączne (idempotentne i przemienne): merge(a,b) == merge(b,a),
-   *     merge(a,a) == a. Kolejność i liczba scaleń nie ma znaczenia.
-   *   - nic nie ginie: `completed` tylko rośnie (logiczne OR), a usunięcia są
-   *     nagrobkami ze znacznikiem czasu, więc też są rozstrzygalne.
+  /* Merges two copies of state. Properties this relies on:
+   *   - it's a join (idempotent and commutative): merge(a,b) == merge(b,a),
+   *     merge(a,a) == a. The order and number of merges don't matter.
+   *   - nothing is lost: `completed` only grows (logical OR), and deletions
+   *     are timestamped tombstones, so they're resolvable too.
    *
-   * Kluczowy szczegół: `learned` rozstrzyga własny learnedAt, a nie updatedAt
-   * całego wpisu ani znacznik całej paczki danych. Gdyby znacznik siedział na
-   * całej paczce, edycja jednego słówka na telefonie unieważniałaby wszystkie
-   * pozostałe zmiany z laptopa.
+   * Key detail: `learned` is resolved by its own learnedAt, not the
+   * updatedAt of the whole entry or a timestamp on the whole data package.
+   * If the timestamp lived on the whole package, editing one word on a
+   * phone would invalidate every other change made on a laptop.
    */
   var EMPTY_LESSON = { completed: false, completedAt: 0, attempt: "", attemptAt: 0 };
 
-  /* Wybiera „świeższą” z dwóch wersji po wskazanym znaczniku czasu.
+  /* Picks the "fresher" of two versions by the given timestamp field.
    *
-   * Remis rozstrzygamy treścią, nie kolejnością argumentów. Bez tego
-   * merge(a, b) i merge(b, a) mogłyby dać różny wynik, gdy oba urządzenia
-   * zapisały zmianę w tej samej milisekundzie — a wtedy cała własność
-   * „kolejność scalania nie ma znaczenia” przestaje obowiązywać. */
+   * Ties are resolved by content, not argument order. Without this,
+   * merge(a, b) and merge(b, a) could give different results when both
+   * devices saved a change in the same millisecond — and then the whole
+   * "merge order doesn't matter" property would stop holding. */
   function fresher(x, y, stampKey) {
     if ((x[stampKey] || 0) !== (y[stampKey] || 0)) {
       return (x[stampKey] || 0) > (y[stampKey] || 0) ? x : y;
@@ -425,10 +426,10 @@ window.WD = window.WD || {};
     out.updatedAt = Math.max(a.updatedAt, b.updatedAt);
 
     keysOf(a.lessons, b.lessons).forEach(function (id) {
-      /* Brakującą stronę zastępujemy pustym wpisem z zerowymi znacznikami.
-       * Wcześniej było tu `|| {}`, co dawało undefined w porównaniu — a każde
-       * porównanie z undefined jest fałszywe, więc lekcja obecna tylko w jednej
-       * kopii gubiła wpisaną odpowiedź. */
+      /* The missing side is replaced with an empty entry with zero
+       * timestamps. This used to be `|| {}`, which gave undefined in the
+       * comparison — and any comparison with undefined is false, so a
+       * lesson present in only one copy would lose its written answer. */
       var x = a.lessons[id] || EMPTY_LESSON;
       var y = b.lessons[id] || EMPTY_LESSON;
       var done = x.completed || y.completed;
@@ -436,7 +437,7 @@ window.WD = window.WD || {};
       var att = fresher(x, y, "attemptAt");
       out.lessons[id] = {
         completed: done,
-        // najwcześniejszy prawdziwy moment ukończenia — wtedy naprawdę to zrobił
+        // earliest real completion moment — that's when they actually did it
         completedAt: done && stamps.length ? Math.min.apply(null, stamps) : 0,
         attempt: att.attempt || "",
         attemptAt: Math.max(x.attemptAt, y.attemptAt),
@@ -473,18 +474,18 @@ window.WD = window.WD || {};
         out.review[key] = x || y;
         return;
       }
-      /* Harmonogram bierzemy z NAJNOWSZEJ prawdziwej powtórki — ona wie
-       * najwięcej o tym, co on dziś pamięta.
+      /* The schedule is taken from the MOST RECENT real review — it knows
+       * the most about what they remember today.
        *
-       * Liczniki scalamy przez maksimum, nie przez sumę. Suma nie jest
-       * idempotentna: to samo scalenie wykonane dwa razy podbiłoby reps
-       * dwukrotnie i sztucznie wydłużyło odstępy. Maksimum daje ten sam wynik
-       * niezależnie od tego, ile razy scalamy.
+       * Counters are merged by maximum, not by sum. Sum isn't idempotent:
+       * the same merge run twice would bump reps twice and artificially
+       * lengthen intervals. Maximum gives the same result no matter how
+       * many times we merge.
        *
-       * ŚWIADOME OGRANICZENIE: jeśli powtórzy tę samą lekcję na dwóch
-       * urządzeniach przed synchronizacją, jedna z ocen zostanie pominięta.
-       * Bez rejestru zdarzeń nie da się tego rozstrzygnąć, a dla jednej osoby
-       * nie jest to warte tej złożoności. */
+       * DELIBERATE LIMITATION: if the same lesson is reviewed on two
+       * devices before syncing, one of the grades gets dropped. Without an
+       * event log this can't be resolved, and for a single person it's not
+       * worth the added complexity. */
       var newer = fresher(x, y, "lastReviewAt");
       out.review[key] = {
         due: newer.due,
@@ -497,13 +498,13 @@ window.WD = window.WD || {};
       };
     });
 
-    /* Dziennik prób to najprostszy przypadek scalania, jaki istnieje: rekordy
-     * są niezmienne i mają unikalne id, więc wystarczy suma zbiorów. Żadnych
-     * konfliktów, bo nic nigdy nie zmienia treści rekordu.
+    /* The attempt log is the simplest merge case there is: records are
+     * immutable and have unique ids, so a set union is enough. No
+     * conflicts, because nothing ever changes a record's content.
      *
-     * Jedyny wyjątek to `tagging`, które dopisuje później analiza — i to
-     * rozstrzygamy własnym znacznikiem czasu, tak samo jak `learned` przy
-     * słówkach. */
+     * The only exception is `tagging`, appended later by analysis — and
+     * that's resolved by its own timestamp, the same way as `learned` for
+     * vocab words. */
     var byId = {};
     a.attemptLog.concat(b.attemptLog).forEach(function (r) {
       var prev = byId[r.id];
@@ -524,8 +525,8 @@ window.WD = window.WD || {};
     return out;
   }
 
-  /* Klucze posortowane: wynik scalania jest wtedy identyczny bajt w bajt
-   * niezależnie od kolejności argumentów, a plik eksportu ma stabilny układ. */
+  /* Keys are sorted: the merge result is then byte-identical regardless of
+   * argument order, and the export file has a stable layout. */
   function keysOf(x, y) {
     var seen = {};
     Object.keys(x).concat(Object.keys(y)).forEach(function (k) {
@@ -534,16 +535,16 @@ window.WD = window.WD || {};
     return Object.keys(seen).sort();
   }
 
-  // ------------------------------------------------------------- odczyt/zapis
+  // ------------------------------------------------------------- read/write
 
   var state = emptyState();
-  var readOnly = false; // true, gdy w przeglądarce leżą dane NOWSZE niż ten kod
+  var readOnly = false; // true when the browser holds data NEWER than this code
   var warning = "";
 
   function load() {
-    /* Wyliczamy od nowa przy każdym wczytaniu. Bez tego raz ustawiony tryb
-     * tylko-do-czytania zostawał na zawsze, nawet po wczytaniu poprawnych
-     * danych — i wszystkie kolejne zapisy cicho przepadały. */
+    /* Recomputed on every load. Without this, once read-only mode was set
+     * it stayed forever, even after loading valid data — and all
+     * subsequent saves would silently vanish. */
     readOnly = false;
     var stored = null;
     try {
@@ -553,8 +554,8 @@ window.WD = window.WD || {};
     }
 
     if (stored && num(stored.schemaVersion) > SCHEMA_VERSION) {
-      /* Ta karta ma stary kod (np. z pamięci CDN), a dane są z nowszej wersji.
-       * Zapis by je uszkodził, więc go blokujemy. */
+      /* This tab has old code (e.g. from CDN cache), and the data is from a
+       * newer version. Saving would corrupt it, so we block it. */
       readOnly = true;
       warning =
         "Ta strona jest w starszej wersji niż Twoje dane. Odśwież stronę (Ctrl+Shift+R). " +
@@ -578,7 +579,7 @@ window.WD = window.WD || {};
 
     if (legacy) {
       state = migrateV1(legacy);
-      save(); // stary klucz zostaje nietknięty jako kopia zapasowa
+      save(); // the old key is left untouched as a backup
       return state;
     }
 
@@ -599,7 +600,7 @@ window.WD = window.WD || {};
     }
   }
 
-  // ------------------------------------------------------------------ mutacje
+  // ------------------------------------------------------------------ mutations
 
   function lesson(id) {
     if (!state.lessons[id]) {
@@ -614,10 +615,10 @@ window.WD = window.WD || {};
     save();
   }
 
-  // ------------------------------------------------------------- dziennik prób
+  // ------------------------------------------------------------- attempt log
 
-  /* Każde podejście to NOWY rekord. Nic nie nadpisujemy — to jedyny sposób,
-   * żeby analiza błędów miała w ogóle na czym pracować. */
+  /* Every attempt is a NEW record. Nothing gets overwritten — that's the
+   * only way error analysis has anything to work with at all. */
   function recordWrite(lessonId, text, shownRegister, contentVersion) {
     if (!text || !String(text).trim()) return null;
     var r = writeRecord(lessonId, String(text).trim(), shownRegister, now(), contentVersion);
@@ -633,8 +634,8 @@ window.WD = window.WD || {};
     return r;
   }
 
-  /* Ostatnia próba dla lekcji — wyłącznie do wypełnienia pola tekstowego.
-   * Wyliczana z dziennika, żeby nie było drugiego źródła prawdy. */
+  /* Latest attempt for a lesson — used solely to prefill the text field.
+   * Computed from the log so there's no second source of truth. */
   function latestAttempt(lessonId) {
     var best = null;
     for (var i = 0; i < state.attemptLog.length; i++) {
@@ -655,9 +656,9 @@ window.WD = window.WD || {};
     return state.attemptLog.length;
   }
 
-  /* Zapis wyniku etykietowania. Pisane przez przyszły potok analizy; tutaj
-   * istnieje, żeby kształt danych był ustalony od początku i żeby dopisanie
-   * potoku nie wymagało kolejnej migracji. */
+  /* Saves a tagging result. Written by a future analysis pipeline; it
+   * exists here so the data shape is settled from the start and adding the
+   * pipeline later won't require another migration. */
   function setTagging(attemptId, result) {
     var tax = window.WD.taxonomy;
     for (var i = 0; i < state.attemptLog.length; i++) {
@@ -687,8 +688,8 @@ window.WD = window.WD || {};
     return limit ? out.slice(0, limit) : out;
   }
 
-  /* Ukończenie lekcji wprowadza ją do rotacji powtórek. To jedyne wejście —
-   * dzięki temu nie ma stanu „ukończona, ale nigdy nie zaplanowana”. */
+  /* Completing a lesson enters it into the review rotation. This is the
+   * only entry point — so there's no "completed but never scheduled" state. */
   function markCompleted(id) {
     var l = lesson(id);
     if (l.completed) return;
@@ -704,14 +705,15 @@ window.WD = window.WD || {};
     save();
   }
 
-  // ------------------------------------------------------------------ powtórki
+  // ------------------------------------------------------------------ reviews
 
   function reviewOf(id) {
     return state.review[reviewKey("lesson", id)] || null;
   }
 
-  /* Zapisuje ocenę powtórki. Sam odstęp wylicza schedule.js — tutaj nie ma
-   * żadnej reguły „za ile dni”, żeby wymiana algorytmu nie dotykała zapisu. */
+  /* Saves a review grade. The interval itself is computed by schedule.js —
+   * there's no "how many days" rule here, so swapping the algorithm doesn't
+   * touch this save. */
   function gradeLesson(id, grade) {
     if (window.WD.schedule.GRADES.indexOf(grade) < 0) return null;
     var key = reviewKey("lesson", id);
@@ -723,9 +725,9 @@ window.WD = window.WD || {};
     return entry;
   }
 
-  /* Lekcje do powtórki z podanej listy id, najbardziej zaległe pierwsze.
-   * Kolejność ustalamy po `due`, a remisy po id — inaczej kolejka
-   * przeskakiwałaby przy każdym renderowaniu. */
+  /* Lessons due for review from the given id list, most overdue first.
+   * Ordered by `due`, with ties broken by id — otherwise the queue would
+   * jump around on every render. */
   function dueLessons(ids, at) {
     var t = at || now();
     var sched = window.WD.schedule;
@@ -762,7 +764,7 @@ window.WD = window.WD || {};
     };
   }
 
-  /* Aktywne słówka: bez nagrobków, najnowsze pierwsze. */
+  /* Active vocab words: no tombstones, newest first. */
   function vocabList() {
     return Object.keys(state.vocab)
       .filter(function (id) {
@@ -796,7 +798,7 @@ window.WD = window.WD || {};
       pl: pl,
       example: example || "",
       custom: !!isCustom,
-      // ponowne dodanie nie kasuje historii: „opanowane” zostaje
+      // re-adding doesn't erase history: "learned" is preserved
       learned: prev ? prev.learned : false,
       learnedAt: prev ? prev.learnedAt : 0,
       addedAt: prev && prev.addedAt ? prev.addedAt : t,
@@ -806,8 +808,8 @@ window.WD = window.WD || {};
     save();
   }
 
-  /* Usunięcie = nagrobek. Wpis zostaje, żeby scalanie nie wskrzesiło słówka,
-   * które celowo wyrzucił. */
+  /* Deletion = tombstone. The entry stays so merging doesn't revive a word
+   * they deliberately removed. */
   function removeVocab(id) {
     var v = state.vocab[id];
     if (!v) return;
@@ -820,7 +822,7 @@ window.WD = window.WD || {};
     var v = state.vocab[id];
     if (!v) return;
     v.learned = !!learned;
-    v.learnedAt = now(); // własny znacznik — patrz komentarz przy merge()
+    v.learnedAt = now(); // its own timestamp — see the comment at merge()
     v.updatedAt = v.learnedAt;
     save();
   }
@@ -830,25 +832,25 @@ window.WD = window.WD || {};
     save();
   }
 
-  // ------------------------------------------------------------ eksport/import
+  // ------------------------------------------------------------ export/import
 
   function exportFilename() {
     return "werkdeutsch-postep-" + new Date().toISOString().slice(0, 10) + ".json";
   }
 
-  /* Eksport do analizy błędów — kroczące okno N dni.
+  /* Export for error analysis — a rolling N-day window.
    *
-   * To jest cały pomost do przyszłego potoku „analiza → nowe lekcje”, i można
-   * z niego korzystać JUŻ TERAZ, lokalnym skryptem, bez żadnego backendu.
-   * Zanim zbudujesz AppSync, DynamoDB i nocne zadania, warto na prawdziwych
-   * danych sprawdzić, czy generowany niemiecki jest dość dobry. Jeśli nie —
-   * koszt tej wiedzy będzie zerowy.
+   * This is the whole bridge to a future "analysis → new lessons" pipeline,
+   * and it can be used RIGHT NOW with a local script, no backend needed.
+   * Before building AppSync, DynamoDB, and nightly jobs, it's worth checking
+   * on real data whether the generated German is good enough. If not — the
+   * cost of finding that out is zero.
    *
-   * `resolveLesson(id)` jest opcjonalne. Dostarczone, dokłada kontekst lekcji
-   * (polecenie i wzorcowe odpowiedzi), żeby paczka była samowystarczalna dla
-   * etykietującego. `contentVersion` przy każdej próbie pozwala wykryć, że
-   * treść lekcji zmieniła się PO tym, jak próba została zapisana — bez tego
-   * porównywałabyś odpowiedź z wzorcem, którego on nigdy nie widział. */
+   * `resolveLesson(id)` is optional. When provided, it adds lesson context
+   * (the prompt and model answers) so the bundle is self-sufficient for
+   * whoever tags it. `contentVersion` on each attempt makes it possible to
+   * detect that the lesson content changed AFTER the attempt was recorded —
+   * without this you'd be comparing an answer to a pattern they never saw. */
   function exportAttempts(windowDays, resolveLesson) {
     var days = windowDays > 0 ? windowDays : 7;
     var since = now() - days * 86400000;
@@ -876,7 +878,7 @@ window.WD = window.WD || {};
           category: l.category,
           situation: l.situation,
           contentVersion: l.contentVersion || 1,
-          // wszystkie trzy rejestry, bo „poprawność” zależy od tego, który wzorzec
+          // all three registers, because "correctness" depends on which pattern
           references: l.answers,
           targetWeaknesses: l.targetWeaknesses || [],
         };
@@ -919,9 +921,9 @@ window.WD = window.WD || {};
     });
   }
 
-  /* Import SCALA, nie nadpisuje. Wgranie starszego pliku nie może skasować
-   * nowszego postępu — dlatego przechodzi przez merge(), tę samą funkcję,
-   * której użyje kiedyś synchronizacja. */
+  /* Import MERGES, it doesn't overwrite. Loading an older file must not
+   * erase newer progress — so it goes through merge(), the same function
+   * that sync will eventually use. */
   function importJSON(text) {
     var incoming;
     try {
@@ -937,7 +939,7 @@ window.WD = window.WD || {};
     }
 
     var isCurrent = incoming.lessons && incoming.vocab && typeof incoming.lessons === "object";
-    // stary format: postęp jako tablica indeksów, słówka jako tablica
+    // old format: progress as an index array, vocab as an array
     var isLegacy = Array.isArray(incoming.completed) || Array.isArray(incoming.vocab);
     if (!isCurrent && !isLegacy) {
       return { ok: false, error: "Plik nie wygląda na kopię postępu WerkDeutsch." };
@@ -955,25 +957,27 @@ window.WD = window.WD || {};
     }).length;
   }
 
-  // ---------------------------------------------------------------- walidacja
+  // ---------------------------------------------------------------- validation
 
   var LESSON_KINDS = ["scenario", "sentences"];
   var LESSON_ORIGINS = ["static", "generated"];
   var LESSON_STATUSES = ["published", "draft"];
 
-  /* Domyślne wartości pól „pochodzeniowych” wypełniamy TUTAJ, a nie w treści.
+  /* Default values for "provenance" fields are filled in HERE, not in the
+   * content.
    *
-   * Dzięki temu dodanie nowego pola nie wymaga dopisywania go do pięćdziesięciu
-   * istniejących lekcji. Ręcznie pisane lekcje są `static` + `published`
-   * + `kind: "scenario"`; lekcje z generatora będą dostarczać te pola same.
+   * This means adding a new field doesn't require touching fifty existing
+   * lessons. Hand-written lessons are `static` + `published`
+   * + `kind: "scenario"`; generator-produced lessons will supply these
+   * fields themselves.
    *
-   * `kind` jest przygotowane pod to, o czym mówi Twój schemat: lekcje typu
-   * `sentences` (pary polski→niemiecki) to INNY rodzaj ćwiczenia niż obecne
-   * scenariusze, a nie ich wariant. Rozdzielenie ich teraz jest darmowe.
+   * `kind` is set up for what the schema anticipates: `sentences`-type
+   * lessons (Polish→German pairs) are a DIFFERENT kind of exercise from the
+   * current scenarios, not a variant of them. Separating them now is free.
    *
-   * `contentVersion` podnoś RĘCZNIE, gdy zmienisz treść lekcji tak, że stare
-   * próby przestają być z nią porównywalne. Bez tego analiza porównywałaby
-   * odpowiedź z wzorcem, którego on nigdy nie widział. */
+   * Bump `contentVersion` MANUALLY when you change a lesson's content so
+   * that old attempts are no longer comparable to it. Without this,
+   * analysis would compare an answer to a pattern they never saw. */
   function applyLessonDefaults(lessons) {
     return (Array.isArray(lessons) ? lessons : []).map(function (l) {
       if (!l || typeof l !== "object") return l;
@@ -990,8 +994,9 @@ window.WD = window.WD || {};
     });
   }
 
-  /* Sprawdza treść z lessons.js przy starcie. Przy 6 lekcjach błąd widać od
-   * razu; przy 50 pisanych przez miesiące — już nie. Lepiej krzyknąć głośno. */
+  /* Validates the content from lessons.js at startup. With 6 lessons an
+   * error is obvious right away; with 50 written over months, it isn't
+   * anymore. Better to fail loudly. */
   function validateLessons(lessons) {
     var problems = [];
     var seenLesson = {};
@@ -1028,8 +1033,9 @@ window.WD = window.WD || {};
         problems.push(where + ": contentVersion musi być liczbą całkowitą > 0");
       }
 
-      /* Lekcja z generatora bez wskazanej słabości jest podejrzana: nie wiadomo,
-       * po co powstała, i nie da się później sprawdzić, czy pomogła. */
+      /* A generator-produced lesson without a declared weakness is
+       * suspicious: it's unclear why it was created, and there's no way to
+       * later check whether it helped. */
       if (l.origin === "generated" && (!Array.isArray(l.targetWeaknesses) || !l.targetWeaknesses.length)) {
         problems.push(where + ": lekcja generowana musi mieć targetWeaknesses");
       }
@@ -1088,7 +1094,7 @@ window.WD = window.WD || {};
           return;
         }
         var prev = seenVocab[w.id];
-        // to samo id może wystąpić w wielu lekcjach, ale musi znaczyć to samo
+        // the same id can appear in multiple lessons, but must mean the same thing
         if (prev && (prev.de !== w.de || prev.pl !== w.pl)) {
           problems.push(
             'słówko "' + w.id + '" ma dwa różne znaczenia: „' + prev.de + " = " + prev.pl +

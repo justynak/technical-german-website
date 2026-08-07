@@ -1,31 +1,31 @@
-/* Treść lekcji.
+/* Lesson content.
  *
- * To jedyny plik, który edytujesz, dodając nowe scenariusze.
- * Kod aplikacji (app.js) i warstwa zapisu (state.js) są od niego niezależne.
+ * This is the only file you edit when adding new scenarios.
+ * The app code (app.js) and the storage layer (state.js) are independent of it.
  *
- * ZASADY:
- *  - `id` lekcji nigdy nie zmieniaj po opublikowaniu — postęp jest zapisany
- *    pod tym identyfikatorem. Zmiana id = utrata postępu w tej lekcji.
- *  - `id` słówka też jest trwałe i GLOBALNE. Jeśli to samo słowo pojawia się
- *    w dwóch lekcjach, użyj tego samego id — wtedy notatnik ma jeden wpis.
- *  - Kolejność w tablicy można zmieniać dowolnie. Postęp jej nie używa.
- *  - `correct` to indeks poprawnej odpowiedzi w `choices` (liczony od 0).
- *  - `targetWeaknesses` to kategorie z taxonomy.js — wyłącznie stamtąd.
- *    Nieznana kategoria zatrzyma uruchomienie aplikacji.
+ * RULES:
+ *  - Never change a lesson's `id` after publishing — progress is saved
+ *    under that identifier. Changing id = losing progress on that lesson.
+ *  - A vocab word's `id` is also permanent and GLOBAL. If the same word
+ *    appears in two lessons, use the same id — then the notebook has one entry.
+ *  - The order in the array can be changed freely. Progress doesn't use it.
+ *  - `correct` is the index of the correct answer in `choices` (0-based).
+ *  - `targetWeaknesses` are categories from taxonomy.js — exclusively from
+ *    there. An unknown category will stop the app from starting.
  *
- * POLA UZUPEŁNIANE AUTOMATYCZNIE (nie musisz ich pisać):
- *  - `kind: "scenario"`   — rodzaj ćwiczenia. Lekcje typu "sentences"
- *                           (pary polski→niemiecki) to inny rodzaj ćwiczenia
- *                           i mogą istnieć obok scenariuszy.
- *  - `origin: "static"`   — ręcznie napisane. Lekcje z generatora będą miały
- *                           "generated" i muszą podać targetWeaknesses.
- *  - `status: "published"` — lekcje z generatora startują jako "draft",
- *                           dopóki ich nie przejrzysz.
- *  - `contentVersion: 1`  — PODNIEŚ RĘCZNIE, gdy zmienisz treść lekcji tak, że
- *                           dawne odpowiedzi przestają być z nią porównywalne.
- *                           Zapisane próby pamiętają wersję, którą widział;
- *                           bez tego analiza porównywałaby jego odpowiedź
- *                           z wzorcem, którego nigdy nie zobaczył.
+ * FIELDS FILLED IN AUTOMATICALLY (you don't need to write them):
+ *  - `kind: "scenario"`    — the exercise type. "sentences"-type lessons
+ *                            (Polish→German pairs) are a different exercise
+ *                            type and can exist alongside scenarios.
+ *  - `origin: "static"`    — hand-written. Generator-produced lessons will
+ *                            have "generated" and must supply targetWeaknesses.
+ *  - `status: "published"` — generator-produced lessons start as "draft"
+ *                            until you review them.
+ *  - `contentVersion: 1`   — BUMP MANUALLY when you change a lesson's content
+ *                            so that old answers are no longer comparable to it.
+ *                            Saved attempts remember the version they saw;
+ *                            without this, analysis would compare their answer
+ *                            to a pattern they never saw.
  */
 window.LESSONS = [
   {

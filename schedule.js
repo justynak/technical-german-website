@@ -1,17 +1,19 @@
-/* Polityka powtórek — kiedy dana rzecz ma wrócić do nauki.
+/* Review policy — when a given item should come back for study.
  *
- * TO JEST JEDYNE MIEJSCE z regułą „za ile dni znowu”. Cały plik jest czystą
- * funkcją: nie czyta DOM, nie dotyka localStorage, nie wie nic o lekcjach ani
- * o słówkach. Dostaje wpis i ocenę, zwraca nowy wpis.
+ * THIS IS THE ONLY PLACE with the "how many days until next" rule. The
+ * whole file is a pure function: it doesn't read the DOM, doesn't touch
+ * localStorage, knows nothing about lessons or vocab words. It receives an
+ * entry and a grade, and returns a new entry.
  *
- * Dlaczego osobny plik: żeby wymiana algorytmu (dziś proste pudełka Leitnera,
- * kiedyś np. SM-2 albo FSRS) była podmianą tego jednego pliku, bez ruszania
- * interfejsu i bez migracji danych. Pola `due` i `interval` są kontraktem —
- * dopóki nowy algorytm je zwraca, reszta aplikacji nie zauważy zmiany.
+ * Why a separate file: so that swapping the algorithm (today simple
+ * Leitner boxes, someday maybe SM-2 or FSRS) is a swap of this one file,
+ * without touching the interface or migrating data. The `due` and
+ * `interval` fields are the contract — as long as the new algorithm
+ * returns them, the rest of the app won't notice the change.
  *
- * Klucze wpisów mają postać "<typ>:<id>" (dziś "lesson:raport-serwisowy").
- * Dzięki temu, gdyby kiedyś powtarzać też pojedyncze słówka, wystarczy dodać
- * typ "word:" — ten plik nie wymaga wtedy żadnej zmiany.
+ * Entry keys look like "<type>:<id>" (today "lesson:raport-serwisowy").
+ * That means if individual vocab words ever need reviewing too, it's
+ * enough to add a "word:" type — this file needs no change at all.
  */
 window.WD = window.WD || {};
 (function () {
@@ -19,15 +21,15 @@ window.WD = window.WD || {};
 
   var DAY = 86400000;
 
-  /* Odstępy w dniach. Kolejna udana powtórka przesuwa o jeden stopień w prawo;
-   * na ostatnim stopniu zostaje 60 dni. */
+  /* Intervals in days. Each successful review moves one step to the right;
+   * at the last step it stays at 60 days. */
   var STEPS = [1, 3, 7, 21, 60];
 
   var GRADES = ["again", "hard", "good"];
 
-  /* Terminy liczymy na początek dnia, nie na godzinę powtórki. Inaczej powtórka
-   * zrobiona o 23:00 z odstępem 1 dnia byłaby „na jutro o 23:00” i przez cały
-   * dzień nie pokazałaby się w kolejce. */
+  /* Due dates are computed at the start of the day, not the hour of the
+   * review. Otherwise a review done at 23:00 with a 1-day interval would be
+   * "tomorrow at 23:00" and wouldn't show up in the queue for most of the day. */
   function startOfDay(ms) {
     var d = new Date(ms);
     d.setHours(0, 0, 0, 0);
@@ -38,26 +40,26 @@ window.WD = window.WD || {};
     return STEPS[Math.max(0, Math.min(reps, STEPS.length - 1))];
   }
 
-  /* entry: poprzedni wpis (albo null przy pierwszym razie)
+  /* entry: the previous entry (or null on the first time)
    * grade: "again" | "hard" | "good"
-   * now:   znacznik czasu (podawany z zewnątrz, żeby dało się to testować) */
+   * now:   timestamp (passed in from outside so this can be tested) */
   function next(entry, grade, now) {
     var reps = entry && entry.reps > 0 ? entry.reps : 0;
     var lapses = entry && entry.lapses > 0 ? entry.lapses : 0;
     var interval;
 
     if (grade === "again") {
-      // nie pamięta — wracamy na start i pokazujemy jeszcze dziś
+      // doesn't remember — back to the start, shown again today
       reps = 0;
       lapses = lapses + 1;
       interval = 0;
     } else if (grade === "hard") {
-      /* Było trudne — zostajemy na tym samym stopniu. Po `reps` udanych
-       * powtórkach ostatni użyty odstęp to stepFor(reps - 1), więc to znaczy
-       * „ten sam odstęp jeszcze raz”: bez awansu, ale i bez cofania do zera. */
+      /* It was hard — stay on the same step. After `reps` successful
+       * reviews the last interval used was stepFor(reps - 1), so this means
+       * "the same interval again": no advance, but no reset to zero either. */
       interval = stepFor(Math.max(0, reps - 1));
     } else {
-      // umie — awans na kolejny stopień
+      // knows it — advance to the next step
       interval = stepFor(reps);
       reps = reps + 1;
     }
@@ -72,8 +74,8 @@ window.WD = window.WD || {};
     };
   }
 
-  /* Pierwsze wejście do rotacji — po ukończeniu lekcji. Nie jest to ocena,
-   * więc `reps` zostaje 0: pierwsza prawdziwa powtórka dopiero coś wykaże. */
+  /* First entry into the rotation — after completing a lesson. This isn't a
+   * grade, so `reps` stays 0: only the first real review will show something. */
   function first(now) {
     return {
       due: startOfDay(now + STEPS[0] * DAY),
@@ -89,9 +91,9 @@ window.WD = window.WD || {};
     return !!entry && entry.due > 0 && entry.due <= now;
   }
 
-  /* Ile dni do terminu: 0 = dziś, liczba dodatnia = w przyszłości.
-   * Liczone na granicach dni, żeby „za 1 dzień” znaczyło „jutro”, a nie
-   * „za 24 godziny”. */
+  /* Days until due: 0 = today, positive number = in the future.
+   * Computed at day boundaries, so "in 1 day" means "tomorrow", not
+   * "in 24 hours". */
   function daysUntil(due, now) {
     return Math.round((startOfDay(due) - startOfDay(now)) / DAY);
   }

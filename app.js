@@ -1,8 +1,8 @@
-/* Warstwa widoku: renderowanie i obsługa kliknięć.
+/* View layer: rendering and click handling.
  *
- * Nie trzyma stanu — czyta go z WD.state i tam go zapisuje. Wszystko, co
- * dotyczy lekcji, odbywa się przez id (nie przez pozycję w tablicy); indeksy
- * pojawiają się tylko lokalnie, do numeracji i przycisków „poprzedni/następny”.
+ * Holds no state — reads it from WD.state and writes it back there.
+ * Everything related to lessons is done via id (not array position);
+ * indexes only appear locally, for numbering and "prev/next" buttons.
  */
 (function () {
   "use strict";
@@ -14,7 +14,7 @@
     return l.id;
   });
 
-  /* Polska liczba mnoga: 1 scenariusz, 2–4 scenariusze, 5+ scenariuszy. */
+  /* Polish plural: 1 scenariusz, 2-4 scenariusze, 5+ scenariuszy. */
   function plural(n, one, few, many) {
     if (n === 1) return one;
     var r10 = n % 10;
@@ -57,10 +57,10 @@
     }, ms || 2000);
   }
 
-  // ------------------------------------------------------ walidacja przy starcie
+  // ------------------------------------------------------ startup validation
 
-  /* Błąd w treści lekcji ma być widoczny natychmiast, a nie objawiać się
-   * pustym polem w interfejsie kilka tygodni później. */
+  /* A lesson content error should be visible immediately, not show up as
+   * an empty field in the UI a few weeks later. */
   var problems = S.validateLessons(LESSONS);
   if (problems.length) {
     document.body.innerHTML =
@@ -77,7 +77,7 @@
     return;
   }
 
-  // ------------------------------------------------------------ bieżąca lekcja
+  // ------------------------------------------------------------ current lesson
 
   S.load();
 
@@ -93,8 +93,8 @@
     return i >= 0 ? LESSONS[i] : null;
   }
 
-  /* Zapisane id może już nie istnieć — lekcja mogła zostać usunięta albo
-   * przemianowana. Wtedy wracamy na początek, zamiast wysypać render(). */
+  /* The saved id might no longer exist — the lesson may have been removed
+   * or renamed. In that case fall back to the start instead of crashing render(). */
   var currentIndex = Math.max(0, indexOfId(S.get().current));
   function lesson() {
     return LESSONS[currentIndex];
@@ -110,7 +110,7 @@
   // ------------------------------------------------------------- renderowanie
 
   function progress() {
-    // liczymy tylko lekcje, które nadal istnieją — inaczej postęp przekroczy 100%
+    // count only lessons that still exist — otherwise progress could exceed 100%
     var done = LESSONS.filter(function (l) {
       return (S.get().lessons[l.id] || {}).completed;
     }).length;
@@ -136,8 +136,8 @@
     }
   }
 
-  /* Kolejka powtórek nad listą scenariuszy. Pokazuje się tylko wtedy, gdy coś
-   * jest naprawdę do zrobienia — pusty panel to szum. */
+  /* Review queue above the scenario list. Only shown when there's actually
+   * something to do — an empty panel is just noise. */
   function renderReview() {
     var due = S.dueLessons(ALL_IDS);
     var panel = $("review-panel");
@@ -189,7 +189,7 @@
     $("scenario-tabs").innerHTML = LESSONS.map(function (l, i) {
       var done = (S.get().lessons[l.id] || {}).completed;
       var due = SCH.isDue(S.reviewOf(l.id), now);
-      // padStart, nie "0"+n — inaczej lekcja 10 wyświetla się jako „010”
+      // padStart, not "0"+n — otherwise lesson 10 would show as "010"
       var no = String(i + 1).padStart(2, "0");
       return (
         '<button class="scenario-tab ' +
@@ -263,9 +263,9 @@
 
     $("feedback").hidden = true;
 
-    /* Ukończenie jest jednorazowym wejściem do rotacji powtórek. Potem nie ma
-     * już czego „oznaczać” — jest tylko ocena, jak poszła powtórka. Dlatego te
-     * dwa elementy wykluczają się, a nie stoją obok siebie. */
+    /* Completing a lesson is a one-time entry into the review rotation. After
+     * that there's nothing left to "mark" — only a grade for how the review
+     * went. That's why these two elements are mutually exclusive, not shown together. */
     var entry = S.reviewOf(l.id);
     $("complete").hidden = !!saved.completed;
     $("complete").classList.toggle("done", !!saved.completed);
@@ -345,7 +345,7 @@
     scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  // ------------------------------------------------------------------ słownictwo
+  // ------------------------------------------------------------------ vocabulary
 
   function toggleLessonWord(vocabId) {
     var w = null;
@@ -365,8 +365,9 @@
     notebook();
   }
 
-  /* Ocena powtórki. Odstęp wylicza schedule.js — tutaj tylko przekazujemy
-   * ocenę i pokazujemy wynik. Zmiana algorytmu nie dotyka tej funkcji. */
+  /* Grading a review. The interval is computed by schedule.js — here we
+   * just pass along the grade and show the result. Changing the algorithm
+   * doesn't touch this function. */
   function gradeCurrent(grade) {
     var entry = S.gradeLesson(lesson().id, grade);
     if (!entry) return;
@@ -379,9 +380,9 @@
     }
   }
 
-  /* Który wzorzec był widoczny, gdy odpowiadał. Bez tego nie da się później
-   * ocenić jego odpowiedzi: "Die Presse ist ausgefallen" jest w porządku wobec
-   * rejestru `simple` i niepełne wobec `professional`. */
+  /* Which register was visible when they answered. Without this, their
+   * answer can't be graded later: "Die Presse ist ausgefallen" is fine
+   * against the `simple` register but incomplete against `professional`. */
   function shownRegister() {
     var active = document.querySelector("[data-level].active");
     return active ? active.dataset.level : "natural";
@@ -396,7 +397,7 @@
     }, 40);
   }
 
-  // -------------------------------------------------------------------- zdarzenia
+  // -------------------------------------------------------------------- events
 
   document.addEventListener("click", function (e) {
     var t = e.target.closest("[data-review-id]");
@@ -440,9 +441,9 @@
     if (t && !t.parentElement.dataset.done) {
       var picked = Number(t.dataset.choice);
       var correct = lesson().correct;
-      /* Wybór z listy zapisujemy jako pełnoprawną próbę. Jest rozstrzygalny bez
-       * żadnego modelu, więc to najtańsze dostępne źródło danych o słabościach —
-       * wcześniej wyrzucaliśmy je do kosza. */
+      /* We record a multiple-choice pick as a full-fledged attempt. It's
+       * gradable without any model, so it's the cheapest available source of
+       * data on weaknesses — previously we were throwing it away. */
       S.recordChoice(lesson().id, picked, correct, lesson().contentVersion);
       t.parentElement.dataset.done = 1;
       t.classList.add(picked === correct ? "correct" : "wrong");
@@ -534,7 +535,7 @@
   $("search").oninput = notebook;
   $("filter").onchange = notebook;
 
-  // ------------------------------------------------------------ własne zwroty
+  // ------------------------------------------------------------ custom phrases
 
   $("add-word").onclick = function () {
     $("word-dialog").showModal();
@@ -563,11 +564,11 @@
     progress();
   };
 
-  // -------------------------------------------------------------- eksport/import
+  // -------------------------------------------------------------- export/import
 
-  /* Kopia postępu jako plik. To najprostsza wersja „przeniesienia postępu na
-   * inne urządzenie”: bez konta, bez backendu, bez sieci. Import SCALA przez
-   * WD.state.merge, więc wgranie starszego pliku nie skasuje nowszego postępu. */
+  /* A copy of progress as a file. This is the simplest version of "moving
+   * progress to another device": no account, no backend, no network. Import
+   * MERGES via WD.state.merge, so loading an older file won't erase newer progress. */
   function download(blob, filename) {
     var url = URL.createObjectURL(blob);
     var a = document.createElement("a");
@@ -586,12 +587,12 @@
     toast("Zapisano kopię postępu");
   };
 
-  /* Paczka do analizy błędów: kroczące okno 7 dni.
+  /* Bundle for error analysis: a rolling 7-day window.
    *
-   * Celowo osobno od kopii postępu — to inne dane dla innego odbiorcy.
-   * Ten plik można podać skryptowi etykietującemu JUŻ TERAZ, bez backendu,
-   * i sprawdzić na prawdziwych danych, czy pomysł działa, zanim powstanie
-   * jakakolwiek infrastruktura. */
+   * Deliberately separate from the progress copy — it's different data for
+   * a different consumer. This file can be fed to a labeling script RIGHT
+   * NOW, with no backend, to check on real data whether the idea works
+   * before any infrastructure exists. */
   var ANALYSIS_WINDOW_DAYS = 7;
 
   $("export-attempts").onclick = function () {
@@ -629,7 +630,7 @@
             : "Postęp scalony — nic nowego do dodania"
         );
       }
-      e.target.value = ""; // pozwala wgrać ten sam plik ponownie
+      e.target.value = ""; // allows the same file to be uploaded again
     };
     reader.onerror = function () {
       toast("Nie udało się odczytać pliku", 4000);
